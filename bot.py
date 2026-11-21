@@ -57,7 +57,7 @@ FLAGS = {
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
-    "risk_k": 3.0,            # v12: multiplier on route exposure/choke cost
+    "risk_k": 1.0,            # v12: multiplier on route exposure/choke cost
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
