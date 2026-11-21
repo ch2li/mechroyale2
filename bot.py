@@ -1,4 +1,4 @@
-"""buckeye v1.1 — mechfight/1 bot.
+"""buckeye v1.2 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -29,6 +29,21 @@ except Exception:  # pragma: no cover
 PI = math.pi
 TAU = 2 * math.pi
 MECH_SOUNDS = {"gun", "laser", "laser_charge", "lightning", "mortar", "step", "boost", "jet", "reload"}
+# ==================================================================================
+# EXPERIMENT SWITCHES - change one line, commit, submit, write down the score.
+# Defaults reproduce v1.0 (scored 4.02 / 3.94).
+# ==================================================================================
+FLAGS = {
+    "kite_lightning": False,  # v1.1: back off out of enemy lightning range (45 m)
+    "evade_unseen": False,    # v1.1: side-step when hit by an enemy we cannot see
+    "zone_guard": False,      # v1.1: fight footwork may not carry us out of the zone
+    "hunt_npcs": True,        # shoot NPC drones for cubes early on
+    "shoot_crates": True,     # shoot loot crates for cubes / weapons
+    "supply_drops": True,     # go capture supply drops
+    "retreat_cover": True,    # retreat to cover when hurt or outnumbered
+    "range_scale": 1.0,       # multiply preferred fighting distance (e.g. 0.7 closer, 1.4 farther)
+}
+
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
 UPGRADE_PRIO = [
     "armor", "plating", "nanites", "laser_damage", "laser_charge", "gun_rate", "gun_damage",
@@ -54,7 +69,7 @@ def unit(dx: float, dy: float):
 
 
 class Bot:
-    name = "buckeye-v1.1"
+    name = "buckeye-v1.2"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -477,6 +492,7 @@ class Bot:
                 pref = 110.0
             else:
                 pref = 60.0
+            pref *= float(FLAGS["range_scale"])
             thp = float(target.get("hp", 1400))
             winning = thp <= hp * 1.1 or thp < 260
             hurt = (not winning) and (hpf < 0.35 or (n_los >= 2 and hpf < 0.6) or (len(enemies) >= 3 and hpf < 0.8))
@@ -498,6 +514,8 @@ class Bot:
             # keep out of an enemy lightning's reach unless we are clearly winning a close fight
             l_rng = float(self.wcfg.get("lightning", {}).get("range", 45))
             zap = [m for m in enemies if "lightning" in (m.get("weapons") or []) and m["_d"] < l_rng + 25]
+            if not FLAGS["kite_lightning"]:
+                zap = []
             if zap and not (has_light and winning and energy > 25):
                 zd = min(m["_d"] for m in zap)
                 if zd < l_rng + 12:
@@ -511,7 +529,7 @@ class Bot:
                     radial = 0.0
             mvx = ex * radial + tx_ * side
             mvy = ey * radial + ty_ * side
-            if hurt and self.world is not None:
+            if hurt and self.world is not None and FLAGS["retreat_cover"]:
                 cov = self.find_cover(x, y, enemies, zone, now)
                 if cov is not None:
                     cx_, cy_ = self.nav_move(x, y, cov[0], cov[1], 2.0, now)
@@ -520,12 +538,6 @@ class Bot:
                 boost = energy > (45 if has_light else 20)
             elif has_light and pref < 40 and tlos and light_rng < td < 130 and energy > 70:
                 boost = True  # close the gap fast
-            elif False:
-                iso = self.find_isolate(x, y, target, enemies, zone, now)
-                if iso is not None:
-                    ix_, iy_ = self.nav_move(x, y, iso[0], iso[1], 2.0, now)
-                    mvx, mvy = ix_ + tx_ * 0.2, iy_ + ty_ * 0.2
-                    mode = "isolate"
             elif not tlos and not hurt and len(enemies) == 1 and hpf > 0.55:
                 # hold the angle: stay put near cover, aim at where it will appear
                 mvx, mvy = tx_ * 0.3, ty_ * 0.3
@@ -545,7 +557,7 @@ class Bot:
                         boost = energy > 15
                         mode += "+dodge"
                         break
-        elif (self.last_hurt_by is not None and self.last_hurt_by < 100 and now - self.last_hurt_t < 2.0
+        elif (FLAGS["evade_unseen"] and self.last_hurt_by is not None and self.last_hurt_by < 100 and now - self.last_hurt_t < 2.0
               and self.last_hurt_bearing is not None):
             # shot by someone we cannot see: do not sit still, side-step out of the line, face the shooter
             self.target_id = None
@@ -571,7 +583,7 @@ class Bot:
                 boost = True
 
         # ---- never let fight / evade footwork carry us out of the zone
-        if mode.startswith(("fight", "cover", "hold", "evade")) and hyp(*move) > 0.1:
+        if FLAGS["zone_guard"] and mode.startswith(("fight", "cover", "hold", "evade")) and hyp(*move) > 0.1:
             lx, ly = x + move[0] * 12, y + move[1] * 12
             if hyp(lx - zcx, ly - zcy) > zr_now - 10 or (tleft < 15 and hyp(lx - scx, ly - scy) > hyp(x - scx, y - scy)):
                 ix, iy = unit(zcx - x, zcy - y) if hyp(lx - zcx, ly - zcy) > zr_now - 10 else unit(scx - x, scy - y)
@@ -681,13 +693,14 @@ class Bot:
             d = hyp(c["pos"][0] - x, c["pos"][1] - y)
             if d < max_detour:
                 cands.append((d - 70, "cube", c))
-        if True:
+        if FLAGS["shoot_crates"]:
             for c in obs.get("crates", []):
                 if self.blacklist.get(c["id"], -1) > now or not self.on_ground_level(c["pos"]):
                     continue
                 d = hyp(c["pos"][0] - x, c["pos"][1] - y)
                 if d < (40 if zone_urgent else 110):
                     cands.append((d - 25, "crate", c))
+        if FLAGS["hunt_npcs"]:
             if hpf > 0.6 and now < 260:
                 for n in npcs_of(obs):
                     d = hyp(n["pos"][0] - x, n["pos"][1] - y)
@@ -699,7 +712,7 @@ class Bot:
                 if n["id"] == self.last_hurt_by:
                     cands.append((-200, "npc", n))
         # supply drop
-        if True:
+        if FLAGS["supply_drops"]:
             for dr in obs.get("drops", []):
                 d = hyp(dr["pos"][0] - x, dr["pos"][1] - y)
                 eta = d / max(1.0, float(me["stats"].get("walk_speed", 11.7)))
@@ -854,35 +867,6 @@ class Bot:
             if best is not None:
                 break
         self._cover = (now, best)
-        return best
-
-    def find_isolate(self, x, y, target, enemies, zone, now):
-        """Nearby walkable point that sees the target but is hidden from every other enemy."""
-        cache = getattr(self, "_iso", None)
-        if cache is not None and now - cache[0] < 0.6 and cache[2] == target["id"]:
-            return cache[1]
-        w = self.world
-        cx_, cy_, zr = self.zone_at(zone, now + 8)
-        others = [m for m in enemies if m["id"] != target["id"]][:4]
-        tp = target["pos"]
-        best, bs = None, 1e18
-        for rad in (8, 16, 26):
-            for k in range(12):
-                a = k * PI / 6
-                px, py = x + rad * math.cos(a), y + rad * math.sin(a)
-                if not w.walkable(px, py) or hyp(px - cx_, py - cy_) > zr - 8:
-                    continue
-                gz = w.ground_at(px, py)
-                if not w.los((px, py, gz + 7), (tp[0], tp[1], tp[2] + 4.5)):
-                    continue
-                if any(w.los((m["pos"][0], m["pos"][1], m["pos"][2] + 8), (px, py, gz + 5)) for m in others):
-                    continue
-                score = rad
-                if score < bs:
-                    bs, best = score, (px, py)
-            if best is not None:
-                break
-        self._iso = (now, best, target["id"])
         return best
 
     def shell_dodge(self, obs, x, y, z):
