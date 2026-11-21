@@ -53,7 +53,7 @@ FLAGS = {
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
     "lightning_first": False, # v11: prefer lightning over laser (chains through bunched-up hunter groups)
     "isolate": False,         # v11: with 2+ enemies in sight, move to a tactical-map cell only the target can hit
-    "tmap": False,            # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
+    "tmap": True,             # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
