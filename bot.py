@@ -37,7 +37,7 @@ FLAGS = {
     "kite_lightning": False,  # v1.1: back off out of enemy lightning range (45 m)
     "evade_unseen": False,    # v1.1: side-step when hit by an enemy we cannot see
     "zone_guard": False,      # v1.1: fight footwork may not carry us out of the zone
-    "hunt_npcs": True,        # shoot NPC drones for cubes early on
+    "hunt_npcs": False,       # shoot NPC drones for cubes early on
     "shoot_crates": True,     # shoot loot crates for cubes / weapons
     "supply_drops": True,     # go capture supply drops
     "retreat_cover": True,    # retreat to cover when hurt or outnumbered
@@ -50,7 +50,7 @@ FLAGS = {
     "standoff": False,        # tested in the real testbed: worse (10.8 pts vs 12.0 base)
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
-    "retreat_early": True,    # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
+    "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
