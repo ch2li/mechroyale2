@@ -59,6 +59,7 @@ FLAGS = {
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
+    "regen_gate": False,      # v14: retreating hurt -> hold fire (unless finishing a kill) so 45 HP/s regen can start
     "zone_margin": 12.0,      # v13: seconds of slack before we must start the zone run
     "threat_mem": 12.0,       # v13: seconds a seen enemy stays a threat for routing / safe points
     "risk_k": 2.0,            # v12: multiplier on route exposure/choke cost
@@ -582,8 +583,15 @@ class Bot:
                 ratio = self.lanchester(me, held, enemies, hp)
                 hurt = ratio < 0.75 and not (thp < 200 and target["_los"])
                 mode = "fight" if not hurt else "fight-" + ("%.1f" % ratio)
+            if FLAGS["regen_gate"] and not winning and hpf < 0.7:
+                hurt = True
             if hurt:
                 pref = 140.0
+                if (FLAGS["regen_gate"] and now - self.last_hurt_t > 1.0
+                        and not (thp < 0.25 * float(target.get("max_hp", 1400)) and tlos)):
+                    fire = [False, False]  # every shot we fire resets the 5 s regen timer
+                    if "laser" in held and laser_charging:
+                        fire[held["laser"]] = True  # never waste a charged laser: keep holding
             ex, ey = unit(target["pos"][0] - x, target["pos"][1] - y)
             radial = 0.0
             if td < pref - 15:
