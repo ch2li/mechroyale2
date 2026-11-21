@@ -1,4 +1,4 @@
-"""buckeye v5.0 — mechfight/1 bot.
+"""buckeye v6.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -40,7 +40,7 @@ FLAGS = {
     "hunt_npcs": True,        # shoot NPC drones for cubes early on
     "shoot_crates": True,     # shoot loot crates for cubes / weapons
     "supply_drops": True,     # go capture supply drops
-    "retreat_cover": False,    # retreat to cover when hurt or outnumbered
+    "retreat_cover": True,    # retreat to cover when hurt or outnumbered
     "range_scale": 1.0,       # multiply preferred fighting distance (e.g. 0.7 closer, 1.4 farther)
     "peek": False,            # v2.0 (scored 3.88): reload behind cover, peek out only to shoot
     "lanchester": False,      # v3.0: fight or disengage by Lanchester square-law strength ratio
@@ -48,7 +48,9 @@ FLAGS = {
     "ffa_detect": True,       # v4.0: switch to free-for-all doctrine once others die without us
     "force_ffa": False,       # testing only: act as if the match is a free-for-all from tick 0
     "standoff": False,        # tested in the real testbed: worse (10.8 pts vs 12.0 base)
-    "no_mortar": True,        # v5: never carry a mortar (lasers cook it off); testbed 14.6 pts vs 12.0
+    "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
+    "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
+    "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -80,7 +82,7 @@ if FLAGS["no_mortar"]:
 
 
 class Bot:
-    name = "buckeye-v5.0"
+    name = "buckeye-v6.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -533,6 +535,9 @@ class Bot:
             hurt = (not winning) and (hpf < 0.35 or (n_los >= 2 and hpf < 0.6) or (len(enemies) >= 3 and hpf < 0.8))
             if n_los >= 3 and hpf < 0.5:
                 hurt = True
+            if FLAGS["retreat_early"] and not winning:
+                if hpf < 0.55 or (n_los >= 2 and hpf < 0.85) or len(enemies) >= 3:
+                    hurt = True
             if FLAGS["lanchester"]:
                 ratio = self.lanchester(me, held, enemies, hp)
                 hurt = ratio < 0.75 and not (thp < 200 and target["_los"])
@@ -625,8 +630,18 @@ class Bot:
                                                        scx, scy, sr, tleft, mvx, mvy, tx_, ty_, boost)
             move = self.free_dir(x, y, mvx, mvy)
             # dodge a laser that is being charged at us
+            cs = self.__dict__.setdefault("charge_start", {})
             for m in enemies:
                 if m.get("charging"):
+                    cs.setdefault(m["id"], now)
+                else:
+                    cs.pop(m["id"], None)
+            for m in enemies:
+                if m.get("charging"):
+                    if FLAGS["dodge_timing"]:
+                        el = now - cs.get(m["id"], now)
+                        if not (2.4 <= el <= 3.0):
+                            continue  # house bots always release at 2.75 s: only dodge then
                     by = math.atan2(y - m["pos"][1], x - m["pos"][0])
                     if abs(angdiff(m["aim"][0], by)) < 0.12:
                         bx, byy = unit(-math.sin(by) * self.strafe, math.cos(by) * self.strafe)
@@ -825,6 +840,8 @@ class Bot:
                 holder = dr.get("holder")
                 if d < 220 and dr.get("lands_in", 0) < eta + 6 and (holder is None or holder == me.get("id")):
                     cands.append((d - 120, "drop", dr))
+        if FLAGS["retreat_early"] and hpf < 0.6:
+            cands = [c for c in cands if c[1] in ("cube", "pickup") and hyp(c[2]["pos"][0] - x, c[2]["pos"][1] - y) < 25]
         cands.sort(key=lambda c: c[0])
         # stick with current loot goal (avoid dithering), give up if no progress
         if self.loot_goal is not None:
