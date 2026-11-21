@@ -1,4 +1,4 @@
-"""buckeye v2.0 — mechfight/1 bot.
+"""buckeye v3.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -42,7 +42,9 @@ FLAGS = {
     "supply_drops": True,     # go capture supply drops
     "retreat_cover": True,    # retreat to cover when hurt or outnumbered
     "range_scale": 1.0,       # multiply preferred fighting distance (e.g. 0.7 closer, 1.4 farther)
-    "peek": True,             # v2.0: reload/cool down behind cover, peek out only to shoot
+    "peek": False,            # v2.0 (scored 3.88): reload behind cover, peek out only to shoot
+    "lanchester": False,      # v3.0: fight or disengage by Lanchester square-law strength ratio
+    "farm": True,             # v3.0: explore early and farm NPC drones / crates for cubes
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -70,7 +72,7 @@ def unit(dx: float, dy: float):
 
 
 class Bot:
-    name = "buckeye-v2.0"
+    name = "buckeye-v3.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -499,6 +501,10 @@ class Bot:
             hurt = (not winning) and (hpf < 0.35 or (n_los >= 2 and hpf < 0.6) or (len(enemies) >= 3 and hpf < 0.8))
             if n_los >= 3 and hpf < 0.5:
                 hurt = True
+            if FLAGS["lanchester"]:
+                ratio = self.lanchester(me, held, enemies, hp)
+                hurt = ratio < 0.75 and not (thp < 200 and target["_los"])
+                mode = "fight" if not hurt else "fight-" + ("%.1f" % ratio)
             if hurt:
                 pref = 140.0
             ex, ey = unit(target["pos"][0] - x, target["pos"][1] - y)
@@ -732,13 +738,13 @@ class Bot:
                 if self.blacklist.get(c["id"], -1) > now or not self.on_ground_level(c["pos"]):
                     continue
                 d = hyp(c["pos"][0] - x, c["pos"][1] - y)
-                if d < (40 if zone_urgent else 110):
+                if d < (40 if zone_urgent else (170 if FLAGS["farm"] else 110)):
                     cands.append((d - 25, "crate", c))
         if FLAGS["hunt_npcs"]:
             if hpf > 0.6 and now < 260:
                 for n in npcs_of(obs):
                     d = hyp(n["pos"][0] - x, n["pos"][1] - y)
-                    if d < (50 if zone_urgent else 90):
+                    if d < (50 if zone_urgent else (170 if FLAGS["farm"] else 90)):
                         cands.append((d - 20, "npc", n))
         # NPC that is shooting us
         if self.last_hurt_by is not None and self.last_hurt_by >= 100 and now - self.last_hurt_t < 2:
@@ -808,7 +814,7 @@ class Bot:
                     ch = float(lw.get("charge", 0) or 0)
                     full = float(lw.get("stats", {}).get("charge", 0.75))
                     fire[held["laser"]] = not (ch >= full - 0.04)
-            standoff = 8.0 if kind == "crate" else 30.0
+            standoff = 8.0 if kind == "crate" else (60.0 if FLAGS["farm"] else 30.0)
             if d > standoff or not vis:
                 mv = self.nav_move(x, y, ox, oy, standoff if vis else 3.0, now)
             else:
@@ -820,6 +826,14 @@ class Bot:
             gw = slots[held["gun"]]
             if float(gw.get("ammo", 12)) < float(gw.get("stats", {}).get("mag", 12)) * 0.6 and float(gw.get("reload", 0)) <= 0:
                 act["reload"] = True
+        # explore to find drones / crates while the zone allows it
+        if FLAGS["farm"] and not zone_urgent and now < 210 and hpf > 0.5 and self.world is not None:
+            wp = self.explore_goal(x, y, scx, scy, sr, now)
+            if wp is not None:
+                mv = self.nav_move(x, y, wp[0], wp[1], 8.0, now)
+                if hyp(*mv) > 0.1:
+                    yaw = math.atan2(mv[1], mv[0]) + 1.1 * math.sin(now * 1.8)  # sweep the view
+                    return "explore", mv, (yaw, 0.0), fire
         # go to (or hold) camp spot inside the safe disc
         key = (round(scx), round(scy), round(sr))
         if self.camp is None or self.camp[3] != key:
@@ -830,6 +844,37 @@ class Bot:
             mv = self.nav_move(x, y, cx, cy, 2.0, now)
             return ("zone" if zone_urgent else "to-camp"), mv, aim, fire
         return "camp", (0.0, 0.0), aim, fire
+
+    def explore_goal(self, x, y, cx, cy, r, now):
+        """Waypoint toward the nearest not-yet-seen part of the safe disc."""
+        vis = getattr(self, "_visited", None)
+        if vis is None:
+            vis = self._visited = set()
+        ci, cj = int(x // 40), int(y // 40)
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                vis.add((ci + di, cj + dj))
+        g = getattr(self, "_explore", None)
+        if g is not None and now - g[2] < 20 and hyp(g[0] - x, g[1] - y) > 15 and (int(g[0] // 40), int(g[1] // 40)) not in vis:
+            return g
+        w = self.world
+        my_comp = w.comp_at(x, y)
+        best, bs = None, 1e18
+        rng = self.rng
+        for _ in range(60):
+            a = rng.uniform(-PI, PI)
+            rr = r * math.sqrt(rng.random())
+            px, py = cx + rr * math.cos(a), cy + rr * math.sin(a)
+            if (int(px // 40), int(py // 40)) in vis or not w.walkable(px, py):
+                continue
+            if my_comp >= 0 and w.comp_at(px, py) != my_comp:
+                continue
+            d = hyp(px - x, py - y)
+            score = abs(d - 110) + 0.2 * rr
+            if score < bs:
+                bs, best = score, (px, py, now)
+        self._explore = best
+        return best
 
     def pick_camp(self, x, y, cx, cy, r, key):
         """A walkable spot inside the safe disc with a wall close behind it."""
@@ -868,6 +913,44 @@ class Bot:
         if best is None:
             return (cx, cy, math.atan2(y - cy, x - cx), key)
         return best
+
+    def weapon_dps(self, kinds, dist, cubes):
+        """Rough sustained damage per second of a loadout at a distance (accuracy folded in)."""
+        W = self.wcfg
+        dps = 0.0
+        g = W.get("gun", {})
+        if "gun" in kinds and dist < g.get("range", 230):
+            cyc = g.get("mag", 12) * g.get("cooldown", 0.24) + g.get("reload", 2.4)
+            acc = max(0.25, 0.85 - dist / 400.0)
+            dps += g.get("damage", 45) * g.get("mag", 12) / cyc * acc
+        l = W.get("laser", {})
+        if "laser" in kinds and dist < l.get("range", 280):
+            dps += l.get("damage", 315) / (l.get("charge", 0.75) + l.get("cooldown", 1.65)) * 0.7
+        z = W.get("lightning", {})
+        if "lightning" in kinds and dist < z.get("range", 45) + 5:
+            dps += z.get("damage", 60) / z.get("cooldown", 0.25) * 0.9
+        m = W.get("mortar", {})
+        if "mortar" in kinds and 20 < dist < 235:
+            dps += (m.get("damage", 200) + m.get("splash", 160)) * 0.5 / m.get("cooldown", 2.6) * 0.4
+        return dps * (1 + 0.04 * min(cubes, 10))
+
+    def lanchester(self, me, held, enemies, hp):
+        """Square-law strength ratio: (our hp*dps) / (sum of sqrt(their hp*dps))^2. >1 = we should win."""
+        armor = float(me.get("stats", {}).get("armor", 0) or 0)
+        my_eff_hp = hp / max(0.2, 1.0 - armor)
+        near = [m for m in enemies if m["_d"] < 170]
+        if not near:
+            return 9.0
+        dmean = sum(m["_d"] for m in near) / len(near)
+        mine = my_eff_hp * self.weapon_dps(list(held), dmean, float(me.get("cubes", 0) or 0))
+        theirs = 0.0
+        for m in near:
+            kinds = m.get("weapons") or ["gun"]
+            e = float(m.get("hp", 1400)) * self.weapon_dps(kinds, m["_d"], float(m.get("cubes", 0) or 0))
+            # an enemy that cannot see us right now only counts half
+            theirs += math.sqrt(max(0.0, e)) * (1.0 if m["_los"] else 0.7)
+        theirs = theirs ** 2
+        return mine / max(1.0, theirs)
 
     def find_spot(self, x, y, see_target, hide_from, zone, now, key):
         """Closest walkable point within ~16 m that is hidden from every enemy in hide_from and,
