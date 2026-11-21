@@ -1,4 +1,4 @@
-"""buckeye v6.0 — mechfight/1 bot.
+"""buckeye v7.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -37,7 +37,7 @@ FLAGS = {
     "kite_lightning": False,  # v1.1: back off out of enemy lightning range (45 m)
     "evade_unseen": False,    # v1.1: side-step when hit by an enemy we cannot see
     "zone_guard": False,      # v1.1: fight footwork may not carry us out of the zone
-    "hunt_npcs": True,        # shoot NPC drones for cubes early on
+    "hunt_npcs": False,       # shoot NPC drones for cubes early on
     "shoot_crates": True,     # shoot loot crates for cubes / weapons
     "supply_drops": True,     # go capture supply drops
     "retreat_cover": True,    # retreat to cover when hurt or outnumbered
@@ -51,6 +51,7 @@ FLAGS = {
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
+    "pacifist": True,         # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -82,7 +83,7 @@ if FLAGS["no_mortar"]:
 
 
 class Bot:
-    name = "buckeye-v6.0"
+    name = "buckeye-v7.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -720,6 +721,21 @@ class Bot:
                     if s1 is not None:
                         act["drop"] = 1
                     break
+
+        # ---- pacifist doctrine: do not hunt; slip away from every mech, shoot only in self-defence
+        if FLAGS["pacifist"] and enemies:
+            near = min(m["_d"] for m in enemies)
+            if near > 30:
+                fire = [False, False]
+            if not laser_charging or near > 30:
+                sp = self.safe_point(x, y, zone, now, scx, scy, sr, tleft < 15,
+                                     force=(self._safe is None or now - self._safe[2] > 1.5))
+                mv = self.nav_move(x, y, sp[0], sp[1], 4.0, now)
+                move = self.free_dir(x, y, *mv) if hyp(*mv) > 0.05 else move
+                boost = energy > 35 and near < 140
+                mode = "evade"
+            if target is not None:
+                aim = (math.atan2(target["pos"][1] - y, target["pos"][0] - x), aim[1] if aim else 0.0)
 
         # ---- mortar shell dodge (always)
         dodge = self.shell_dodge(obs, x, y, z)
