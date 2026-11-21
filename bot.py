@@ -57,6 +57,7 @@ FLAGS = {
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
+    "risk_k": 1.0,            # v12: multiplier on route exposure/choke cost
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
@@ -1130,6 +1131,7 @@ class Bot:
         cache = {}
         nbr = w.nbr
         za = self.zone_at
+        rk = FLAGS["risk_k"]
 
         def risk(c, g):
             e = cache.get(c)
@@ -1139,9 +1141,9 @@ class Bot:
                 for tx, ty, wt in thr:
                     dd = hyp(cx - tx, cy - ty)
                     if dd < 140 and not w.covered_from(c, tx, ty):
-                        r += (1.5 if dd < 90 else 0.7) * wt
+                        r += (1.5 if dd < 90 else 0.7) * wt * rk
                 if bin(nbr[c]).count("1") < 6:
-                    r += 0.3
+                    r += 0.3 * rk
                 e = cache[c] = (r, cx, cy)
             r, cx, cy = e
             zx, zy, zr = za(zone, now + g / spd)
