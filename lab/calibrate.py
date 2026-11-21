@@ -24,6 +24,7 @@ VARIANTS = {   # name: (flags, real mean practice score, real runs)
     "k2_standoff":  ({**K2, "standoff": True}, 4.06, 1),
     "no_npc":       ({"risk_nav": False, "hunt_npcs": False}, 3.75, 1),
     "k2_regen":     ({**K2, "regen_gate": True}, None, 0),
+    "k2_edge":      ({**K2, "edge_camp": True}, None, 0),
     "pacifist":     ({"risk_nav": False, "pacifist": True, "hunt_npcs": False}, 0.56, 1),
 }
 

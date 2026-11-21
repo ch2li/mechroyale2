@@ -59,6 +59,7 @@ FLAGS = {
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
+    "edge_camp": False,       # v14: hold a ring just inside the NEXT circle's edge (not the middle), face inward
     "regen_gate": False,      # v14: retreating hurt -> hold fire (unless finishing a kill) so 45 HP/s regen can start
     "zone_margin": 12.0,      # v13: seconds of slack before we must start the zone run
     "threat_mem": 12.0,       # v13: seconds a seen enemy stays a threat for routing / safe points
@@ -1087,11 +1088,23 @@ class Bot:
         rng = self.rng
         tries = 260 if r > 15 else 60
         my_comp = w.comp_at(x, y)
+        edge = None
+        if FLAGS["edge_camp"] and self._zone is not None:
+            nc, nr = self._zone["next_center"], float(self._zone["next_radius"])
+            if nr >= 45:
+                margin, band = max(8.0, 0.06 * nr), max(12.0, 0.15 * nr)
+                edge = (nc[0], nc[1], nr - margin - band, nr - margin)
         # bias toward the side of the disc nearest to us
         for _ in range(tries):
             a = rng.uniform(-PI, PI)
-            rr = r * math.sqrt(rng.random())
-            px, py = cx + rr * math.cos(a), cy + rr * math.sin(a)
+            if edge is not None:
+                ex_, ey_, r0_, r1_ = edge
+                a = math.atan2(y - ey_, x - ex_) + rng.gauss(0.0, 0.6)  # our side of the ring
+                rr = rng.uniform(r0_, r1_)
+                px, py = ex_ + rr * math.cos(a), ey_ + rr * math.sin(a)
+            else:
+                rr = r * math.sqrt(rng.random())
+                px, py = cx + rr * math.cos(a), cy + rr * math.sin(a)
             if not w.walkable(px, py):
                 continue
             if my_comp >= 0 and w.comp_at(px, py) != my_comp:
@@ -1104,7 +1117,7 @@ class Bot:
                 if kk >= 0 and w.blocked[kk]:
                     walls.append(ang)
             dme = hyp(px - x, py - y)
-            score = dme * 0.6 + rr * 0.25
+            score = dme * 0.6 + (0.0 if edge is not None else rr * 0.25)
             if walls:
                 score -= 60
             if FLAGS["tmap"] and w.tmap is not None:
@@ -1115,6 +1128,8 @@ class Bot:
                 sx = sum(math.cos(a2) for a2 in walls)
                 sy = sum(math.sin(a2) for a2 in walls)
                 face = math.atan2(-sy, -sx) if walls else math.atan2(cy - py, cx - px)
+                if edge is not None:
+                    face = math.atan2(edge[1] - py, edge[0] - px)  # threats come from inside the circle
                 bs, best = score, (px, py, face, key)
         if best is None:
             return (cx, cy, math.atan2(y - cy, x - cx), key)
