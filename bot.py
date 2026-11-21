@@ -1,4 +1,4 @@
-"""buckeye v8.0 — mechfight/1 bot.
+"""buckeye v9.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -51,7 +51,8 @@ FLAGS = {
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
-    "drop_priority": True,    # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
+    "pursue": True,           # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
+    "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
@@ -84,7 +85,7 @@ if FLAGS["no_mortar"]:
 
 
 class Bot:
-    name = "buckeye-v8.0"
+    name = "buckeye-v9.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -950,6 +951,18 @@ class Bot:
                 if hyp(*mv) > 0.1:
                     yaw = math.atan2(mv[1], mv[0]) + 1.1 * math.sin(now * 1.8)  # sweep the view
                     return "explore", mv, (yaw, 0.0), fire
+        # pursue: meet the next hunter early instead of waiting for it (practice score ~ kills per minute)
+        if FLAGS["pursue"] and not zone_urgent and hpf > 0.55:
+            pts = [(px, py, wt) for (px, py, wt) in self.threat_points(now, x, y)]
+            best_p, bd = None, 1e9
+            zx_, zy_, zr_ = self.zone_at(zone, now + 15)
+            for (px, py, wt) in pts:
+                d = hyp(px - x, py - y)
+                if 25 < d < 260 and hyp(px - zx_, py - zy_) < zr_ - 10 and d < bd:
+                    best_p, bd = (px, py), d
+            if best_p is not None:
+                mv = self.nav_move(x, y, best_p[0], best_p[1], 15.0, now)
+                return "pursue", mv, (math.atan2(best_p[1] - y, best_p[0] - x), 0.0), fire
         # go to (or hold) camp spot inside the safe disc
         key = (round(scx), round(scy), round(sr))
         if self.camp is None or self.camp[3] != key:
