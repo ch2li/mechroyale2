@@ -40,7 +40,7 @@ FLAGS = {
     "hunt_npcs": True,        # shoot NPC drones for cubes early on
     "shoot_crates": True,     # shoot loot crates for cubes / weapons
     "supply_drops": True,     # go capture supply drops
-    "retreat_cover": True,    # retreat to cover when hurt or outnumbered
+    "retreat_cover": False,    # retreat to cover when hurt or outnumbered
     "range_scale": 1.0,       # multiply preferred fighting distance (e.g. 0.7 closer, 1.4 farther)
     "peek": False,            # v2.0 (scored 3.88): reload behind cover, peek out only to shoot
     "lanchester": False,      # v3.0: fight or disengage by Lanchester square-law strength ratio
