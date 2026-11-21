@@ -51,9 +51,9 @@ FLAGS = {
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
-    "lightning_first": True,  # v11: prefer lightning over laser (chains through bunched-up hunter groups)
-    "isolate": False,         # v11: with 2+ enemies in sight, move to a tactical-map cell only the target can hit
-    "tmap": False,            # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
+    "lightning_first": False, # v11: prefer lightning over laser (chains through bunched-up hunter groups)
+    "isolate": True,          # v11: with 2+ enemies in sight, move to a tactical-map cell only the target can hit
+    "tmap": True,             # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
