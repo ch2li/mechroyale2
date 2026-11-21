@@ -19,6 +19,7 @@ import time
 from collections import deque
 
 import mechfight as mf
+from blackbox import BlackBox
 
 try:
     from nav import Planner, World
@@ -144,6 +145,7 @@ class Bot:
         self.last_hurt_bearing = None
         self.last_hurt_by = None
         self.hurt_by = {}  # mech id -> last t it hurt us
+        self.bb = BlackBox()  # flight recorder (lab analysis only; no effect on play)
         self.last_fire_t = -1e9
         self.look = None  # (yaw, until)
         self.target_id = None
@@ -846,6 +848,10 @@ class Bot:
         act["fire"] = fire
         self.mode = mode
 
+        try:
+            self.bb.tick(obs, mode, fire, enemies, sum(1 for m in enemies if m.get("_los")))
+        except Exception:
+            pass
         # ---- planner gets the leftover time
         if self.planner is not None and self.planner.busy():
             self.planner.run(deadline, now)
