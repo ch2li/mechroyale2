@@ -59,7 +59,7 @@ FLAGS = {
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
     "zone_margin": 12.0,      # v13: seconds of slack before we must start the zone run
-    "threat_mem": 20.0,       # v13: seconds a seen enemy stays a threat for routing / safe points
+    "threat_mem": 12.0,       # v13: seconds a seen enemy stays a threat for routing / safe points
     "risk_k": 2.0,            # v12: multiplier on route exposure/choke cost
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
