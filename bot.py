@@ -1,4 +1,4 @@
-"""buckeye v3.0 — mechfight/1 bot.
+"""buckeye v4.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -44,7 +44,9 @@ FLAGS = {
     "range_scale": 1.0,       # multiply preferred fighting distance (e.g. 0.7 closer, 1.4 farther)
     "peek": False,            # v2.0 (scored 3.88): reload behind cover, peek out only to shoot
     "lanchester": False,      # v3.0: fight or disengage by Lanchester square-law strength ratio
-    "farm": True,             # v3.0: explore early and farm NPC drones / crates for cubes
+    "farm": False,            # v3.0 (scored 3.98): explore early and farm NPC drones / crates
+    "ffa_detect": True,       # v4.0: switch to free-for-all doctrine once others die without us
+    "force_ffa": False,       # testing only: act as if the match is a free-for-all from tick 0
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -72,7 +74,7 @@ def unit(dx: float, dy: float):
 
 
 class Bot:
-    name = "buckeye-v3.0"
+    name = "buckeye-v4.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -103,6 +105,11 @@ class Bot:
         self._wanted_move = 0.0
         self.want_climb = False
         self.deadline = 0.0
+        self.ffa = bool(FLAGS.get("force_ffa"))
+        self.my_kills = 0
+        self.emem = {}          # enemy id -> (t, x, y)
+        self.sound_pts = []     # (t, x, y) estimated positions of heard mech sounds
+        self._safe = None
         self.strafe = 1.0
         self.strafe_until = 0.0
         self.hist = deque(maxlen=16)  # (t, x, y, move_x, move_y)
@@ -330,6 +337,8 @@ class Bot:
                 self.blacklist[e.get("id")] = now + 8.0
             elif et == "took":
                 self.loot_goal = None
+            elif et == "kill":
+                self.my_kills += 1
 
         # ---- offer
         offer = obs.get("offer")
@@ -392,6 +401,21 @@ class Bot:
             self.unstuck_until = now + 0.9
             self.force_replan = True
             self.hist.clear()
+
+        # ---- free-for-all detection: in practice the squad never kills each other
+        if (not self.ffa and FLAGS["ffa_detect"] and 2.0 < now < 150
+                and int(obs.get("alive", 16)) + self.my_kills < int(self.cfg.get("match", {}).get("mechs", 16))):
+            self.ffa = True
+            mf.log(f"FFA detected at t={now:.1f}")
+        for m in obs.get("mechs", []):
+            if m.get("kind") == "mech" and m.get("id") != me.get("id"):
+                self.emem[m["id"]] = (now, m["pos"][0], m["pos"][1])
+        for s in obs.get("sounds", []):
+            if s.get("kind") in MECH_SOUNDS and s.get("bearing") is not None and s.get("dist") in ("near", "mid"):
+                r_ = 45.0 if s["dist"] == "near" else 110.0
+                self.sound_pts.append((now, x + r_ * math.cos(s["bearing"]), y + r_ * math.sin(s["bearing"])))
+        if len(self.sound_pts) > 40:
+            self.sound_pts = self.sound_pts[-40:]
 
         # ================================================================ decide
         self.want_climb = False
@@ -586,6 +610,9 @@ class Bot:
             if tleft < 10 or not me.get("in_zone", True):
                 zx, zy = self.nav_move(x, y, scx, scy, sr, now)
                 mvx, mvy = mvx * 0.4 + zx, mvy * 0.4 + zy
+            if self.ffa:
+                mvx, mvy, boost, mode = self.ffa_fight(x, y, me, hpf, energy, target, enemies, held, zone, now,
+                                                       scx, scy, sr, tleft, mvx, mvy, tx_, ty_, boost)
             move = self.free_dir(x, y, mvx, mvy)
             # dodge a laser that is being charged at us
             for m in enemies:
@@ -614,6 +641,19 @@ class Bot:
             move = self.free_dir(x, y, *mv)
             aim = (bq, 0.0)
             boost = energy > 40
+        elif self.ffa:
+            self.target_id = None
+            near_threat = any(hyp(px - x, py - y) < 110 for (px, py, wt) in self.threat_points(now, x, y) if wt >= 1.0)
+            if near_threat:
+                mode, move, aim = self.ffa_roam(obs, me, x, y, z, hpf, energy, held, slots, act, zone, zone_urgent,
+                                                scx, scy, sr, tleft, now)
+            else:
+                mode, move, aim, fire = self.peaceful(obs, me, x, y, z, hpf, held, slots, act, zone,
+                                                      zone_urgent, scx, scy, sr, now)
+                if mode in ("camp", "to-camp"):
+                    mode, move, aim = self.ffa_roam(obs, me, x, y, z, hpf, energy, held, slots, act, zone, zone_urgent,
+                                                    scx, scy, sr, tleft, now)
+            boost = (zone_urgent and d_safe > 20 and energy > 45) or (mode == "ffa-hurt" and energy > 40)
         else:
             self.target_id = None
             mode, move, aim, fire_loot = self.peaceful(obs, me, x, y, z, hpf, held, slots, act, zone,
@@ -633,7 +673,17 @@ class Bot:
                     move = self.free_dir(x, y, *move)
 
         # ---- grab a better weapon we are standing on (any mode)
-        if "take" not in act and not laser_charging:
+        if "take" not in act and not laser_charging and self.ffa:
+            for p in obs.get("pickups", []):
+                ds = self.ffa_swap(p.get("kind"), slots, held)
+                if ds is None:
+                    continue
+                if hyp(p["pos"][0] - x, p["pos"][1] - y) < self.loot_r - 0.3 and abs(p["pos"][2] - z) < 3.8:
+                    act["take"] = int(p["id"])
+                    if ds >= 0:
+                        act["drop"] = ds
+                    break
+        if "take" not in act and not laser_charging and not self.ffa:
             s1 = slots[1] if len(slots) > 1 else None
             rank1 = WEAPON_RANK.get(s1["kind"], 0) if s1 else -1
             for p in obs.get("pickups", []):
@@ -720,7 +770,10 @@ class Bot:
             if self.blacklist.get(p["id"], -1) > now:
                 continue
             k = p.get("kind")
-            if k in held or WEAPON_RANK.get(k, 0) <= cur_rank:
+            if self.ffa:
+                if self.ffa_swap(k, slots, held) is None:
+                    continue
+            elif k in held or WEAPON_RANK.get(k, 0) <= cur_rank:
                 continue
             if not self.on_ground_level(p["pos"]):
                 continue
@@ -775,7 +828,11 @@ class Bot:
             if kind == "pickup":
                 if d < self.loot_r - 0.4 and not ("laser" in held and float(slots[held["laser"]].get("charge", 0) or 0) > 0):
                     act["take"] = int(o["id"])
-                    if all(slots[:2]) and len(slots) >= 2:
+                    if self.ffa:
+                        ds = self.ffa_swap(o.get("kind"), slots, held)
+                        if ds is not None and ds >= 0:
+                            act["drop"] = ds
+                    elif all(slots[:2]) and len(slots) >= 2:
                         act["drop"] = 1
                 mv = self.nav_move(x, y, ox, oy, 1.0, now) if d > 1.0 else (0.0, 0.0)
                 return "loot-" + o["kind"], mv, aim, fire
@@ -913,6 +970,136 @@ class Bot:
         if best is None:
             return (cx, cy, math.atan2(y - cy, x - cx), key)
         return best
+
+    # ================================================================== free-for-all doctrine
+    # Learned from the 10 PM Top-16 showdown replays: bots that kept moving, stayed out of crowds,
+    # did not open fire early and ended with laser + lightning placed far higher.
+    FFA_RANK = {"laser": 3.0, "lightning": 2.5, "mortar": 1.0, "gun": 0.5}
+
+    def ffa_swap(self, kind, slots, held):
+        """Slot to drop for this pickup (-1 = an empty slot), or None if not worth taking."""
+        if kind is None or kind in held:
+            return None
+        for i, wp in enumerate(slots[:2]):
+            if wp is None:
+                return -1
+        worst = min(range(min(2, len(slots))), key=lambda i: self.FFA_RANK.get(slots[i]["kind"], 0))
+        if self.FFA_RANK.get(kind, 0) > self.FFA_RANK.get(slots[worst]["kind"], 0) + 0.4:
+            return worst
+        return None
+
+    def threat_points(self, now, x, y):
+        pts = [(px, py, 1.0) for (t, px, py) in self.emem.values() if now - t < 12]
+        pts += [(px, py, 0.5) for (t, px, py) in self.sound_pts if now - t < 6]
+        if self.last_hurt_bearing is not None and now - self.last_hurt_t < 4 and (self.last_hurt_by or 0) < 100:
+            b_ = float(self.last_hurt_bearing)
+            pts.append((x + 90 * math.cos(b_), y + 90 * math.sin(b_), 1.0))
+        return pts
+
+    def safe_point(self, x, y, zone, now, scx, scy, sr, urgent, force=False):
+        """Low-threat walkable point 35-110 m away, inside where the zone will be."""
+        c = self._safe
+        if (not force and c is not None and now - c[2] < 4.0 and hyp(c[0] - x, c[1] - y) > 8):
+            return c
+        w = self.world
+        pts = self.threat_points(now, x, y)
+        zx, zy, zr = self.zone_at(zone, now + 20)
+        best, bs = None, 1e18
+        my_comp = w.comp_at(x, y) if w is not None else -1
+        for rad in (35, 70, 110):
+            for k in range(16):
+                a = k * PI / 8 + (0.2 if rad == 70 else 0.0)
+                px, py = x + rad * math.cos(a), y + rad * math.sin(a)
+                if w is not None:
+                    if not w.walkable(px, py) or (my_comp >= 0 and w.comp_at(px, py) != my_comp):
+                        continue
+                thr = sum(wt * 900.0 / (hyp(px - tx, py - ty) + 20.0) for (tx, ty, wt) in pts)
+                out_now = max(0.0, hyp(px - zx, py - zy) - (zr - 15))
+                if out_now > 0 and hyp(x - zx, y - zy) < zr - 15:
+                    continue  # never trade a safe position for one the zone will cover
+                out_safe = max(0.0, hyp(px - scx, py - scy) - sr)
+                score = thr + 10.0 * out_now + (2.0 if urgent else 0.15) * out_safe + 0.02 * rad
+                if score < bs:
+                    bs, best = score, (px, py, now)
+        if best is None:
+            best = (scx, scy, now)
+        self._safe = best
+        return best
+
+    def ffa_fight(self, x, y, me, hpf, energy, target, enemies, held, zone, now, scx, scy, sr, tleft,
+                  mvx, mvy, tx_, ty_, boost):
+        close = [m for m in enemies if m["_d"] < 150]
+        thf = float(target.get("hp", 1400)) / max(1.0, float(target.get("max_hp", 1400)))
+        td = target["_d"]
+        ex, ey = unit(target["pos"][0] - x, target["pos"][1] - y)
+        urgent = tleft < 15
+        if len(close) >= 2 or (hpf < 0.45 and thf > hpf - 0.05):
+            sp = self.safe_point(x, y, zone, now, scx, scy, sr, urgent, force=(now - self._safe[2] > 1.5) if self._safe else True)
+            nx_, ny_ = self.nav_move(x, y, sp[0], sp[1], 4.0, now)
+            return nx_ + tx_ * 0.3, ny_ + ty_ * 0.3, energy > 25, "ffa-disengage"
+        if thf < 0.4 and td < 170 and target["_los"]:
+            radial = 1.0 if td > 55 else 0.0
+            return ex * radial + tx_ * 0.6, ey * radial + ty_ * 0.6, boost, "ffa-finish"
+        if "laser" in held:
+            pref = 110.0
+        elif "lightning" in held and "gun" not in held:
+            pref = 35.0
+        else:
+            pref = 85.0
+        if not (target["_los"] and td < pref - 15):
+            # nothing to change: keep the proven v1.0 footwork, just never walk toward a healthy enemy
+            dot = mvx * ex + mvy * ey
+            if dot > 0 and thf > 0.4:
+                mvx, mvy = mvx - dot * ex, mvy - dot * ey
+            return mvx, mvy, boost, "ffa-hold"
+        mx_, my_ = -ex + tx_ * 0.85, -ey + ty_ * 0.85  # back off while firing
+        if urgent or not me.get("in_zone", True):
+            zx_, zy_ = self.nav_move(x, y, scx, scy, sr, now)
+            mx_, my_ = mx_ * 0.4 + zx_, my_ * 0.4 + zy_
+        return mx_, my_, boost, "ffa-kite"
+
+    def ffa_roam(self, obs, me, x, y, z, hpf, energy, held, slots, act, zone, urgent, scx, scy, sr, tleft, now):
+        """No enemy in sight: keep moving to low-threat ground, grab only nearby useful loot."""
+        near_threat = any(hyp(px - x, py - y) < 100 for (px, py, wt) in self.threat_points(now, x, y) if wt >= 1.0)
+        if "gun" in held:
+            gw = slots[held["gun"]]
+            if float(gw.get("ammo", 12)) < float(gw.get("stats", {}).get("mag", 12)) * 0.7 and float(gw.get("reload", 0)) <= 0:
+                act["reload"] = True
+        if not near_threat and not urgent:
+            best, bd = None, 1e9
+            for p in obs.get("pickups", []):
+                if self.ffa_swap(p.get("kind"), slots, held) is None or not self.on_ground_level(p["pos"]):
+                    continue
+                if self.blacklist.get(p["id"], -1) > now:
+                    continue
+                d = hyp(p["pos"][0] - x, p["pos"][1] - y)
+                if d < 90 and d < bd:
+                    best, bd = p, d
+            if best is None:
+                for c in obs.get("cubes", []):
+                    if not self.on_ground_level(c["pos"]) or self.blacklist.get(c["id"], -1) > now:
+                        continue
+                    d = hyp(c["pos"][0] - x, c["pos"][1] - y)
+                    if d < 45 and d < bd:
+                        best, bd = c, d
+            if best is not None:
+                if self.loot_goal is None or self.loot_goal[0] != best["id"]:
+                    self.loot_goal = (best["id"], now, 0)
+                elif now - self.loot_goal[1] > 15:
+                    self.blacklist[best["id"]] = now + 30
+                mv = self.nav_move(x, y, best["pos"][0], best["pos"][1], 0.8, now)
+                return "ffa-loot", mv, None
+        sp = self.safe_point(x, y, zone, now, scx, scy, sr, urgent)
+        mv = self.nav_move(x, y, sp[0], sp[1], 4.0, now)
+        if hyp(*mv) < 0.1:
+            self._safe = None
+        mode = "ffa-hurt" if (hpf < 0.5 and near_threat) else "ffa-roam"
+        yaw = None
+        if self.look is not None and now < self.look[1]:
+            yaw = self.look[0]
+        elif hyp(*mv) > 0.1:
+            yaw = math.atan2(mv[1], mv[0]) + 1.0 * math.sin(now * 1.6)
+        return mode, mv, (yaw, 0.0) if yaw is not None else None
 
     def weapon_dps(self, kinds, dist, cubes):
         """Rough sustained damage per second of a loadout at a distance (accuracy folded in)."""
