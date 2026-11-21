@@ -1,4 +1,4 @@
-"""buckeye v7.0 — mechfight/1 bot.
+"""buckeye v8.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -37,7 +37,7 @@ FLAGS = {
     "kite_lightning": False,  # v1.1: back off out of enemy lightning range (45 m)
     "evade_unseen": False,    # v1.1: side-step when hit by an enemy we cannot see
     "zone_guard": False,      # v1.1: fight footwork may not carry us out of the zone
-    "hunt_npcs": False,       # shoot NPC drones for cubes early on
+    "hunt_npcs": True,        # shoot NPC drones for cubes early on
     "shoot_crates": True,     # shoot loot crates for cubes / weapons
     "supply_drops": True,     # go capture supply drops
     "retreat_cover": True,    # retreat to cover when hurt or outnumbered
@@ -47,11 +47,12 @@ FLAGS = {
     "farm": False,            # v3.0 (scored 3.98): explore early and farm NPC drones / crates
     "ffa_detect": True,       # v4.0: switch to free-for-all doctrine once others die without us
     "force_ffa": False,       # testing only: act as if the match is a free-for-all from tick 0
-    "standoff": False,        # tested in the real testbed: worse (10.8 pts vs 12.0 base)
+    "standoff": True,         # tested in the real testbed: worse (10.8 pts vs 12.0 base)
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
-    "pacifist": True,         # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
+    "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
+    "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -83,7 +84,7 @@ if FLAGS["no_mortar"]:
 
 
 class Bot:
-    name = "buckeye-v7.0"
+    name = "buckeye-v8.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -622,6 +623,17 @@ class Bot:
                         gw_ = slots[held["gun"]]
                         if float(gw_.get("reload", 0)) <= 0 and float(gw_.get("ammo", 12)) < float(gw_.get("stats", {}).get("mag", 12)):
                             act["reload"] = True  # reload behind cover
+            # fight our way onto a supply drop: full HP + 3 cubes is worth more than holding ground
+            if FLAGS["drop_priority"] and hpf < 0.85 and min(m["_d"] for m in enemies) > 45:
+                for dr in obs.get("drops", []):
+                    dd = hyp(dr["pos"][0] - x, dr["pos"][1] - y)
+                    hold_ = dr.get("holder")
+                    if dd < 200 and dr.get("lands_in", 0) < dd / walk_speed + 2 and (hold_ is None or hold_ == me.get("id")):
+                        gx_, gy_ = self.nav_move(x, y, dr["pos"][0], dr["pos"][1], float(dr.get("radius", 8)) * 0.4, now)
+                        mvx, mvy = gx_ + tx_ * 0.3, gy_ + ty_ * 0.3
+                        mode = "fight-drop"
+                        boost = energy > 30 and dd > 20
+                        break
             # stay inside zone
             if tleft < 10 or not me.get("in_zone", True):
                 zx, zy = self.nav_move(x, y, scx, scy, sr, now)
@@ -854,8 +866,9 @@ class Bot:
                 d = hyp(dr["pos"][0] - x, dr["pos"][1] - y)
                 eta = d / max(1.0, float(me["stats"].get("walk_speed", 11.7)))
                 holder = dr.get("holder")
-                if d < 220 and dr.get("lands_in", 0) < eta + 6 and (holder is None or holder == me.get("id")):
-                    cands.append((d - 120, "drop", dr))
+                rng_ = 350 if FLAGS["drop_priority"] else 220
+                if d < rng_ and dr.get("lands_in", 0) < eta + 6 and (holder is None or holder == me.get("id")):
+                    cands.append((d - (300 if FLAGS["drop_priority"] else 120), "drop", dr))
         if FLAGS["retreat_early"] and hpf < 0.6:
             cands = [c for c in cands if c[1] in ("cube", "pickup") and hyp(c[2]["pos"][0] - x, c[2]["pos"][1] - y) < 25]
         cands.sort(key=lambda c: c[0])
