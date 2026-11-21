@@ -1,4 +1,4 @@
-"""buckeye v10.0 — mechfight/1 bot.
+"""buckeye v11.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -51,7 +51,9 @@ FLAGS = {
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
-    "tmap": True,             # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
+    "lightning_first": True,  # v11: prefer lightning over laser (chains through bunched-up hunter groups)
+    "isolate": False,         # v11: with 2+ enemies in sight, move to a tactical-map cell only the target can hit
+    "tmap": False,            # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
@@ -83,10 +85,15 @@ def unit(dx: float, dy: float):
 
 if FLAGS["no_mortar"]:
     WEAPON_RANK["mortar"] = -1
+if FLAGS["lightning_first"]:
+    WEAPON_RANK["lightning"], WEAPON_RANK["laser"] = 3, 2
+    for _u in ("lightning_chain", "lightning_efficiency", "lightning_range"):
+        UPGRADE_PRIO.remove(_u)
+        UPGRADE_PRIO.insert(3, _u)
 
 
 class Bot:
-    name = "buckeye-v10.0"
+    name = "buckeye-v11.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -588,6 +595,11 @@ class Bot:
                 boost = energy > (45 if has_light else 20)
             elif has_light and pref < 40 and tlos and light_rng < td < 130 and energy > 70:
                 boost = True  # close the gap fast
+            elif (FLAGS["isolate"] and n_los >= 2 and self.world is not None and self.world.tmap is not None
+                  and (iso := self.isolate_cell(x, y, target, enemies, zone, now)) is not None):
+                ix_, iy_ = self.nav_move(x, y, iso[0], iso[1], 2.0, now)
+                mvx, mvy = ix_ + tx_ * 0.2, iy_ + ty_ * 0.2
+                mode = "isolate"
             elif not tlos and not hurt and len(enemies) == 1 and hpf > 0.55:
                 # hold the angle: stay put near cover, aim at where it will appear
                 mvx, mvy = tx_ * 0.3, ty_ * 0.3
@@ -1287,6 +1299,27 @@ class Bot:
             if best is not None:
                 break
         self._cover = (now, best)
+        return best
+
+    def isolate_cell(self, x, y, target, enemies, zone, now):
+        """Closest reachable cell where the target can be shot but every other enemy is behind cover."""
+        cache = getattr(self, "_isoc", None)
+        if cache is not None and now - cache[0] < 0.5 and cache[2] == target["id"]:
+            return cache[1]
+        w = self.world
+        tp = target["pos"]
+        others = [(m["pos"][0], m["pos"][1]) for m in enemies if m["id"] != target["id"]][:5]
+        cx_, cy_, zr = self.zone_at(zone, now + 8)
+        best, bs = None, 1e18
+        for c, pl in w.reachable_cells(x, y, 8).items():
+            px, py = w.ccenter(c)
+            if hyp(px - cx_, py - cy_) > zr - 6 or w.covered_from(c, tp[0], tp[1]):
+                continue
+            if any(not w.covered_from(c, ox, oy) for (ox, oy) in others):
+                continue
+            if pl < bs:
+                bs, best = pl, (px, py)
+        self._isoc = (now, best, target["id"])
         return best
 
     def find_cover_tmap(self, x, y, enemies, zone, now):
