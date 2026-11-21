@@ -1,4 +1,4 @@
-"""buckeye v12.0 — mechfight/1 bot.
+"""buckeye v13.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -57,7 +57,8 @@ FLAGS = {
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
-    "risk_k": 1.5,            # v12: multiplier on route exposure/choke cost
+    "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
+    "risk_k": 1.0,            # v12: multiplier on route exposure/choke cost
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
@@ -95,7 +96,7 @@ if FLAGS["lightning_first"]:
 
 
 class Bot:
-    name = "buckeye-v12.0"
+    name = "buckeye-v13.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -680,6 +681,9 @@ class Bot:
                 mvx, mvy, boost, mode = self.ffa_fight(x, y, me, hpf, energy, target, enemies, held, zone, now,
                                                        scx, scy, sr, tleft, mvx, mvy, tx_, ty_, boost)
             move = self.free_dir(x, y, mvx, mvy)
+            if (FLAGS["risk_fight"] and len(enemies) >= 2 and mode not in ("duck", "peek")
+                    and self.world is not None and self.world.tmap is not None and hyp(*move) > 0.2):
+                move = self.fight_vet(x, y, move, target, enemies, zone, now)
             # dodge a laser that is being charged at us
             cs = self.__dict__.setdefault("charge_start", {})
             for m in enemies:
@@ -1152,6 +1156,32 @@ class Bot:
                 r += 3.0 + 0.1 * out
             return r
         return risk
+
+    def fight_vet(self, x, y, move, target, enemies, zone, now):
+        """Bend a fight step (up to +-70 deg) toward ground the non-target enemies cannot shoot into."""
+        w = self.world
+        others = [m for m in enemies if m["id"] != target["id"] and m["_d"] < 150][:4]
+        if not others:
+            return move
+        zx, zy, zr = self.zone_at(zone, now + 2.0)
+        L = hyp(*move)
+        a0 = math.atan2(move[1], move[0])
+        best, bs = move, 1e18
+        for da in (0.0, 0.6, -0.6, 1.2, -1.2):
+            a = a0 + da
+            px, py = x + 5.0 * math.cos(a), y + 5.0 * math.sin(a)
+            c = w.cidx(px, py)
+            if c < 0 or not w.walkable(px, py):
+                continue
+            sc = 0.35 * abs(da)
+            for m in others:
+                if not w.covered_from(c, m["pos"][0], m["pos"][1]):
+                    sc += 1.0
+            if hyp(px - zx, py - zy) > zr - 3.0:
+                sc += 5.0
+            if sc < bs:
+                bs, best = sc, (L * math.cos(a), L * math.sin(a))
+        return self.free_dir(x, y, *best) if best is not move else move
 
     def pick_move(self, x, y, cands, now):
         """Choose among candidate moves (first = preferred): stay walkable, in the zone, and do not close on threats."""
