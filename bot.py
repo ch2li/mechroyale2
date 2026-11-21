@@ -58,6 +58,8 @@ FLAGS = {
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
+    "zone_margin": 12.0,      # v13: seconds of slack before we must start the zone run
+    "threat_mem": 12.0,       # v13: seconds a seen enemy stays a threat for routing / safe points
     "risk_k": 2.0,            # v12: multiplier on route exposure/choke cost
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
@@ -422,7 +424,7 @@ class Bot:
             if rr is not None and rr[1] == (round(scx), round(scy)):
                 rk = max(rk, rr[0])
         travel = max(0.0, d_safe) * rk / max(1.0, walk_speed)
-        zone_urgent = (not me.get("in_zone", True)) or tleft < travel + 12.0
+        zone_urgent = (not me.get("in_zone", True)) or tleft < travel + FLAGS["zone_margin"]
         self._tleft = tleft
 
         # ---- stuck detection: we asked to move a fair distance but barely moved
@@ -1122,7 +1124,7 @@ class Bot:
         return None
 
     def threat_points(self, now, x, y):
-        pts = [(px, py, 1.0) for (t, px, py) in self.emem.values() if now - t < 12]
+        pts = [(px, py, 1.0) for (t, px, py) in self.emem.values() if now - t < FLAGS["threat_mem"]]
         pts += [(px, py, 0.5) for (t, px, py) in self.sound_pts if now - t < 6]
         if self.last_hurt_bearing is not None and now - self.last_hurt_t < 4 and (self.last_hurt_by or 0) < 100:
             b_ = float(self.last_hurt_bearing)
