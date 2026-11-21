@@ -1,4 +1,4 @@
-"""buckeye v4.0 — mechfight/1 bot.
+"""buckeye v5.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -47,6 +47,8 @@ FLAGS = {
     "farm": False,            # v3.0 (scored 3.98): explore early and farm NPC drones / crates
     "ffa_detect": True,       # v4.0: switch to free-for-all doctrine once others die without us
     "force_ffa": False,       # testing only: act as if the match is a free-for-all from tick 0
+    "standoff": False,        # tested in the real testbed: worse (10.8 pts vs 12.0 base)
+    "no_mortar": True,        # v5: never carry a mortar (lasers cook it off); testbed 14.6 pts vs 12.0
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -73,8 +75,12 @@ def unit(dx: float, dy: float):
     return dx / L, dy / L
 
 
+if FLAGS["no_mortar"]:
+    WEAPON_RANK["mortar"] = -1
+
+
 class Bot:
-    name = "buckeye-v4.0"
+    name = "buckeye-v5.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -519,6 +525,8 @@ class Bot:
                 pref = 110.0
             else:
                 pref = 60.0
+            if FLAGS["standoff"] and "laser" in held and n_los <= 2:
+                pref = 165.0  # house bots: gun hits 19% at 150-180 m, laser <=10%; our laser is hitscan
             pref *= float(FLAGS["range_scale"])
             thp = float(target.get("hp", 1400))
             winning = thp <= hp * 1.1 or thp < 260
@@ -558,6 +566,8 @@ class Bot:
                     mode += "+kite"
                 elif radial > 0:
                     radial = 0.0
+            if FLAGS["standoff"] and "laser" in held and pref >= 150 and td < 110 and energy > 35:
+                boost = True  # open the range quickly
             mvx = ex * radial + tx_ * side
             mvy = ey * radial + ty_ * side
             if hurt and self.world is not None and FLAGS["retreat_cover"]:
@@ -778,7 +788,10 @@ class Bot:
             if not self.on_ground_level(p["pos"]):
                 continue
             d = hyp(p["pos"][0] - x, p["pos"][1] - y)
-            if d < max_detour:
+            lim = max_detour
+            if FLAGS["standoff"] and k == "laser" and "laser" not in held and not zone_urgent:
+                lim = 260.0  # the whole doctrine depends on having a laser
+            if d < lim:
                 cands.append((d - 60 * WEAPON_RANK.get(k, 0) - 40, "pickup", p))
         for c in obs.get("cubes", []):
             if self.blacklist.get(c["id"], -1) > now or not self.on_ground_level(c["pos"]):
@@ -974,11 +987,11 @@ class Bot:
     # ================================================================== free-for-all doctrine
     # Learned from the 10 PM Top-16 showdown replays: bots that kept moving, stayed out of crowds,
     # did not open fire early and ended with laser + lightning placed far higher.
-    FFA_RANK = {"laser": 3.0, "lightning": 2.5, "mortar": 1.0, "gun": 0.5}
+    FFA_RANK = {"laser": 3.0, "lightning": 2.5, "mortar": 0.3, "gun": 0.5}
 
     def ffa_swap(self, kind, slots, held):
         """Slot to drop for this pickup (-1 = an empty slot), or None if not worth taking."""
-        if kind is None or kind in held:
+        if kind is None or kind in held or (FLAGS["no_mortar"] and kind == "mortar"):
             return None
         for i, wp in enumerate(slots[:2]):
             if wp is None:
@@ -1041,7 +1054,7 @@ class Bot:
             radial = 1.0 if td > 55 else 0.0
             return ex * radial + tx_ * 0.6, ey * radial + ty_ * 0.6, boost, "ffa-finish"
         if "laser" in held:
-            pref = 110.0
+            pref = 165.0 if FLAGS["standoff"] else 110.0
         elif "lightning" in held and "gun" not in held:
             pref = 35.0
         else:
