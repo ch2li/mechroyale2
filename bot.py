@@ -59,6 +59,8 @@ FLAGS = {
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
+    "face_threat": False,     # v14: with regen_gate holding fire, turn the torso to the last shooter (rear hits x1.5)
+    "heal_first": False,      # v14: below 85% HP and nobody shooting us, back off to regen before re-engaging
     "edge_camp": False,       # v14: hold a ring just inside the NEXT circle's edge (not the middle), face inward
     "regen_gate": False,      # v14: retreating hurt -> hold fire (unless finishing a kill) so 45 HP/s regen can start
     "zone_margin": 12.0,      # v13: seconds of slack before we must start the zone run
@@ -586,6 +588,9 @@ class Bot:
                 mode = "fight" if not hurt else "fight-" + ("%.1f" % ratio)
             if FLAGS["regen_gate"] and not winning and hpf < 0.7:
                 hurt = True
+            if (FLAGS["heal_first"] and hpf < 0.85 and now - self.last_hurt_t > 3.0
+                    and min(m["_d"] for m in enemies) > 50 and thp > 0.3 * float(target.get("max_hp", 1400))):
+                hurt = True
             if hurt:
                 pref = 140.0
                 if (FLAGS["regen_gate"] and now - self.last_hurt_t > 1.0
@@ -593,6 +598,9 @@ class Bot:
                     fire = [False, False]  # every shot we fire resets the 5 s regen timer
                     if "laser" in held and laser_charging:
                         fire[held["laser"]] = True  # never waste a charged laser: keep holding
+                    elif (FLAGS["face_threat"] and self.last_hurt_bearing is not None
+                          and now - self.last_hurt_t < 4.0):
+                        aim = (float(self.last_hurt_bearing), 0.0)  # front arc to the shooter: no x1.5 rear hits
             ex, ey = unit(target["pos"][0] - x, target["pos"][1] - y)
             radial = 0.0
             if td < pref - 15:
