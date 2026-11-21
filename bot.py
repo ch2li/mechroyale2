@@ -59,10 +59,10 @@ FLAGS = {
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "risk_fight": False,      # v13: vet fight footwork (strafe/retreat) against exposure to the *other* enemies (tactical map)
-    "face_threat": False,     # v14: with regen_gate holding fire, turn the torso to the last shooter (rear hits x1.5)
+    "face_threat": True,      # v14: with regen_gate holding fire, turn the torso to the last shooter (rear hits x1.5)
     "heal_first": False,      # v14: below 85% HP and nobody shooting us, back off to regen before re-engaging
     "edge_camp": False,       # v14: hold a ring just inside the NEXT circle's edge (not the middle), face inward
-    "regen_gate": False,      # v14: retreating hurt -> hold fire (unless finishing a kill) so 45 HP/s regen can start
+    "regen_gate": True,       # v14: retreating hurt -> hold fire (unless finishing a kill) so 45 HP/s regen can start
     "zone_margin": 12.0,      # v13: seconds of slack before we must start the zone run
     "threat_mem": 12.0,       # v13: seconds a seen enemy stays a threat for routing / safe points
     "risk_k": 2.0,            # v12: multiplier on route exposure/choke cost
