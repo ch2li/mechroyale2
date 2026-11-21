@@ -1,4 +1,4 @@
-"""buckeye v1.2 — mechfight/1 bot.
+"""buckeye v2.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -42,6 +42,7 @@ FLAGS = {
     "supply_drops": True,     # go capture supply drops
     "retreat_cover": True,    # retreat to cover when hurt or outnumbered
     "range_scale": 1.0,       # multiply preferred fighting distance (e.g. 0.7 closer, 1.4 farther)
+    "peek": True,             # v2.0: reload/cool down behind cover, peek out only to shoot
 }
 
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
@@ -69,7 +70,7 @@ def unit(dx: float, dy: float):
 
 
 class Bot:
-    name = "buckeye-v1.2"
+    name = "buckeye-v2.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -542,6 +543,39 @@ class Bot:
                 # hold the angle: stay put near cover, aim at where it will appear
                 mvx, mvy = tx_ * 0.3, ty_ * 0.3
                 mode = "hold-angle"
+            # ---- peek & duck: expose ourselves only while a weapon is ready to fire
+            if FLAGS["peek"] and self.world is not None and not mode.startswith("cover"):
+                g_ok = l_ok = z_ok = False
+                if "gun" in held:
+                    gw_ = slots[held["gun"]]
+                    g_ok = float(gw_.get("ammo", 0)) >= 2 and float(gw_.get("reload", 0)) <= 0
+                if "laser" in held:
+                    lw_ = slots[held["laser"]]
+                    l_ok = float(lw_.get("charge", 0) or 0) > 0 or float(lw_.get("cooldown", 0)) <= 0.4
+                if "lightning" in held:
+                    z_ok = energy > 20 and td < light_rng + 10
+                ready = g_ok or l_ok or z_ok
+                seen_by = [m for m in enemies if m["_los"] or m["_d"] < 45]
+                spot = None
+                if not ready and seen_by:
+                    spot = self.find_spot(x, y, None, seen_by, zone, now, "duck")
+                    if spot is not None:
+                        mode = "duck"
+                elif ready and not tlos and target["_d"] < 160:
+                    tv = target.get("vel", [0, 0, 0])
+                    closing = -(tv[0] * ex + tv[1] * ey)  # >0: it is walking toward us
+                    if closing < 3.0:
+                        others = [m for m in enemies if m["id"] != target["id"]]
+                        spot = self.find_spot(x, y, target, others, zone, now, "peek")
+                        if spot is not None:
+                            mode = "peek"
+                if spot is not None:
+                    px_, py_ = self.nav_move(x, y, spot[0], spot[1], 1.0, now)
+                    mvx, mvy = px_, py_
+                    if mode == "duck" and "gun" in held:
+                        gw_ = slots[held["gun"]]
+                        if float(gw_.get("reload", 0)) <= 0 and float(gw_.get("ammo", 12)) < float(gw_.get("stats", {}).get("mag", 12)):
+                            act["reload"] = True  # reload behind cover
             # stay inside zone
             if tleft < 10 or not me.get("in_zone", True):
                 zx, zy = self.nav_move(x, y, scx, scy, sr, now)
@@ -833,6 +867,41 @@ class Bot:
                 bs, best = score, (px, py, face, key)
         if best is None:
             return (cx, cy, math.atan2(y - cy, x - cx), key)
+        return best
+
+    def find_spot(self, x, y, see_target, hide_from, zone, now, key):
+        """Closest walkable point within ~16 m that is hidden from every enemy in hide_from and,
+        if see_target is given, has a clear shot at it."""
+        cache = getattr(self, "_spot", {})
+        ck = (key, see_target["id"] if see_target else None)
+        hit = cache.get(ck)
+        if hit is not None and now - hit[0] < 0.5 and hyp(hit[2] - x, hit[3] - y) < 4:
+            return hit[1]
+        w = self.world
+        cx_, cy_, zr = self.zone_at(zone, now + 6)
+        best = None
+        for rad in (4, 7, 11, 16):
+            cands = []
+            for k in range(16):
+                a = k * PI / 8
+                px, py = x + rad * math.cos(a), y + rad * math.sin(a)
+                if not w.walkable(px, py) or hyp(px - cx_, py - cy_) > zr - 6:
+                    continue
+                if not w.seg_walkable(x, y, px, py, 1.5):
+                    continue
+                gz = w.ground_at(px, py)
+                if see_target is not None:
+                    tp = see_target["pos"]
+                    if not w.los((px, py, gz + 7), (tp[0], tp[1], tp[2] + 4.5)):
+                        continue
+                if any(w.los((m["pos"][0], m["pos"][1], m["pos"][2] + 8), (px, py, gz + 6)) for m in hide_from[:4]):
+                    continue
+                cands.append((px, py))
+            if cands:
+                best = cands[0]
+                break
+        cache[ck] = (now, best, x, y)
+        self._spot = cache
         return best
 
     def find_cover(self, x, y, enemies, zone, now):
