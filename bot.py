@@ -1,4 +1,4 @@
-"""buckeye v1.0 — mechfight/1 bot.
+"""buckeye v1.1 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -54,7 +54,7 @@ def unit(dx: float, dy: float):
 
 
 class Bot:
-    name = "buckeye-v1.0"
+    name = "buckeye-v1.1"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -494,8 +494,23 @@ class Bot:
                 self.strafe = rng.choice((-1.0, 1.0))
                 self.strafe_until = now + rng.uniform(0.45, 1.3)
             tx_, ty_ = -ey * self.strafe, ex * self.strafe
-            mvx = ex * radial + tx_ * 0.85
-            mvy = ey * radial + ty_ * 0.85
+            side = 0.85
+            # keep out of an enemy lightning's reach unless we are clearly winning a close fight
+            l_rng = float(self.wcfg.get("lightning", {}).get("range", 45))
+            zap = [m for m in enemies if "lightning" in (m.get("weapons") or []) and m["_d"] < l_rng + 25]
+            if zap and not (has_light and winning and energy > 25):
+                zd = min(m["_d"] for m in zap)
+                if zd < l_rng + 12:
+                    zm = min(zap, key=lambda m: m["_d"])
+                    ex, ey = unit(zm["pos"][0] - x, zm["pos"][1] - y)
+                    tx_, ty_ = -ey * self.strafe, ex * self.strafe
+                    radial, side = -1.0, 0.35
+                    boost = energy > 20 and zd < l_rng + 4
+                    mode += "+kite"
+                elif radial > 0:
+                    radial = 0.0
+            mvx = ex * radial + tx_ * side
+            mvy = ey * radial + ty_ * side
             if hurt and self.world is not None:
                 cov = self.find_cover(x, y, enemies, zone, now)
                 if cov is not None:
@@ -505,6 +520,12 @@ class Bot:
                 boost = energy > (45 if has_light else 20)
             elif has_light and pref < 40 and tlos and light_rng < td < 130 and energy > 70:
                 boost = True  # close the gap fast
+            elif False:
+                iso = self.find_isolate(x, y, target, enemies, zone, now)
+                if iso is not None:
+                    ix_, iy_ = self.nav_move(x, y, iso[0], iso[1], 2.0, now)
+                    mvx, mvy = ix_ + tx_ * 0.2, iy_ + ty_ * 0.2
+                    mode = "isolate"
             elif not tlos and not hurt and len(enemies) == 1 and hpf > 0.55:
                 # hold the angle: stay put near cover, aim at where it will appear
                 mvx, mvy = tx_ * 0.3, ty_ * 0.3
@@ -524,6 +545,23 @@ class Bot:
                         boost = energy > 15
                         mode += "+dodge"
                         break
+        elif (self.last_hurt_by is not None and self.last_hurt_by < 100 and now - self.last_hurt_t < 2.0
+              and self.last_hurt_bearing is not None):
+            # shot by someone we cannot see: do not sit still, side-step out of the line, face the shooter
+            self.target_id = None
+            mode = "evade"
+            bq = float(self.last_hurt_bearing)
+            if now > self.strafe_until:
+                self.strafe = rng.choice((-1.0, 1.0))
+                self.strafe_until = now + rng.uniform(0.6, 1.4)
+            ax_, ay_ = math.cos(bq), math.sin(bq)
+            mv = (-ay_ * self.strafe - ax_ * 0.5, ax_ * self.strafe - ay_ * 0.5)
+            if tleft < 10 or not me.get("in_zone", True):
+                zx, zy = self.nav_move(x, y, scx, scy, sr, now)
+                mv = (mv[0] * 0.4 + zx, mv[1] * 0.4 + zy)
+            move = self.free_dir(x, y, *mv)
+            aim = (bq, 0.0)
+            boost = energy > 40
         else:
             self.target_id = None
             mode, move, aim, fire_loot = self.peaceful(obs, me, x, y, z, hpf, held, slots, act, zone,
@@ -531,6 +569,16 @@ class Bot:
             fire = fire_loot
             if zone_urgent and d_safe > 20 and energy > 45 and not laser_charging:
                 boost = True
+
+        # ---- never let fight / evade footwork carry us out of the zone
+        if mode.startswith(("fight", "cover", "hold", "evade")) and hyp(*move) > 0.1:
+            lx, ly = x + move[0] * 12, y + move[1] * 12
+            if hyp(lx - zcx, ly - zcy) > zr_now - 10 or (tleft < 15 and hyp(lx - scx, ly - scy) > hyp(x - scx, y - scy)):
+                ix, iy = unit(zcx - x, zcy - y) if hyp(lx - zcx, ly - zcy) > zr_now - 10 else unit(scx - x, scy - y)
+                dot = move[0] * ix + move[1] * iy
+                if dot < 0.3:
+                    move = (move[0] - (dot - 0.3) * ix, move[1] - (dot - 0.3) * iy)
+                    move = self.free_dir(x, y, *move)
 
         # ---- grab a better weapon we are standing on (any mode)
         if "take" not in act and not laser_charging:
@@ -806,6 +854,35 @@ class Bot:
             if best is not None:
                 break
         self._cover = (now, best)
+        return best
+
+    def find_isolate(self, x, y, target, enemies, zone, now):
+        """Nearby walkable point that sees the target but is hidden from every other enemy."""
+        cache = getattr(self, "_iso", None)
+        if cache is not None and now - cache[0] < 0.6 and cache[2] == target["id"]:
+            return cache[1]
+        w = self.world
+        cx_, cy_, zr = self.zone_at(zone, now + 8)
+        others = [m for m in enemies if m["id"] != target["id"]][:4]
+        tp = target["pos"]
+        best, bs = None, 1e18
+        for rad in (8, 16, 26):
+            for k in range(12):
+                a = k * PI / 6
+                px, py = x + rad * math.cos(a), y + rad * math.sin(a)
+                if not w.walkable(px, py) or hyp(px - cx_, py - cy_) > zr - 8:
+                    continue
+                gz = w.ground_at(px, py)
+                if not w.los((px, py, gz + 7), (tp[0], tp[1], tp[2] + 4.5)):
+                    continue
+                if any(w.los((m["pos"][0], m["pos"][1], m["pos"][2] + 8), (px, py, gz + 5)) for m in others):
+                    continue
+                score = rad
+                if score < bs:
+                    bs, best = score, (px, py)
+            if best is not None:
+                break
+        self._iso = (now, best, target["id"])
         return best
 
     def shell_dodge(self, obs, x, y, z):
