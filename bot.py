@@ -47,10 +47,10 @@ FLAGS = {
     "farm": False,            # v3.0 (scored 3.98): explore early and farm NPC drones / crates
     "ffa_detect": True,       # v4.0: switch to free-for-all doctrine once others die without us
     "force_ffa": False,       # testing only: act as if the match is a free-for-all from tick 0
-    "standoff": True,         # tested in the real testbed: worse (10.8 pts vs 12.0 base)
+    "standoff": False,        # tested in the real testbed: worse (10.8 pts vs 12.0 base)
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
-    "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
+    "retreat_early": True,    # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
