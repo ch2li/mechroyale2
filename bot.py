@@ -1,4 +1,4 @@
-"""buckeye v11.0 — mechfight/1 bot.
+"""buckeye v12.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -52,10 +52,11 @@ FLAGS = {
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
     "lightning_first": False, # v11: prefer lightning over laser (chains through bunched-up hunter groups)
-    "isolate": True,          # v11: with 2+ enemies in sight, move to a tactical-map cell only the target can hit
-    "tmap": True,             # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
+    "isolate": False,         # v11: with 2+ enemies in sight, move to a tactical-map cell only the target can hit
+    "tmap": False,            # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
     "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
+    "risk_nav": True,         # v12: routes priced by exposure/zone/chokes; route-length zone timing; vetted overrides; loot only if evac in time
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
 
@@ -93,7 +94,7 @@ if FLAGS["lightning_first"]:
 
 
 class Bot:
-    name = "buckeye-v11.0"
+    name = "buckeye-v12.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -124,6 +125,7 @@ class Bot:
         self._wanted_move = 0.0
         self.want_climb = False
         self.deadline = 0.0
+        self._tleft, self._ws, self._zone, self._sd = 1e9, 11.7, None, (0.0, 0.0, 1.0)
         self.ffa = bool(FLAGS.get("force_ffa"))
         self.my_kills = 0
         self.emem = {}          # enemy id -> (t, x, y)
@@ -233,8 +235,13 @@ class Bot:
             if not w.seg_walkable(x, y, x + ux * 6, y + uy * 6):
                 self.want_climb = True
             return ux, uy
+        risky = False
+        if FLAGS["risk_nav"] and w.tmap is not None:
+            thr = self.threat_points(now, x, y)
+            risky = bool(thr)
+            self.planner.risk = self.make_risk(thr, now) if (risky or self._tleft < 60) else None
         # direct if clear and short
-        if d < 70 and w.seg_walkable(x, y, gx, gy):
+        if d < (25 if risky else 70) and w.seg_walkable(x, y, gx, gy):
             return unit(gx - x, gy - y)
         goal = (gx, gy, gr)
         pl = self.planner
@@ -242,7 +249,7 @@ class Bot:
             self.path, self.path_goal, self.path_t = pl.path, pl.goal, pl.done_t
         need = (self.path is None or self.path_goal is None or self.force_replan
                 or hyp(self.path_goal[0] - gx, self.path_goal[1] - gy) > max(6.0, 0.2 * d)
-                or now - self.path_t > 6.0)
+                or now - self.path_t > (3.0 if risky else 6.0))
         if need and (not pl.busy() or pl.goal is None
                      or hyp(pl.goal[0] - gx, pl.goal[1] - gy) > max(15.0, 0.3 * d)):
             pl.request(x, y, goal, now)
@@ -250,6 +257,13 @@ class Bot:
             pl.run(min(self.deadline, time.perf_counter() + 0.006), now)
             if pl.path is not None and pl.done_t > self.path_t:
                 self.path, self.path_goal, self.path_t = pl.path, pl.goal, pl.done_t
+        if FLAGS["risk_nav"] and self.path and self.path_t == pl.done_t and self.path_goal is not None:
+            sx_, sy_, sr_ = self._sd
+            pg = self.path_goal
+            st_ = hyp(pg[0] - self.path[0][0], pg[1] - self.path[0][1])
+            if hyp(pg[0] - sx_, pg[1] - sy_) < sr_ + 8 and st_ > 25:
+                ln = sum(hyp(b[0] - a[0], b[1] - a[1]) for a, b in zip(self.path, self.path[1:]))
+                self.route_k = (min(3.0, ln / st_ * 1.1), (round(sx_), round(sy_)))
         path = self.path
         if not path or self.path_goal is None or hyp(self.path_goal[0] - gx, self.path_goal[1] - gy) > max(15.0, 0.3 * d):
             return self.free_dir(x, y, *unit(gx - x, gy - y))
@@ -263,7 +277,7 @@ class Bot:
             self.force_replan = True
         # farthest reachable waypoint ahead
         tgt = path[min(bi + 1, len(path) - 1)]
-        for k in range(min(len(path) - 1, bi + 12), bi, -1):
+        for k in range(min(len(path) - 1, bi + (3 if risky else 12)), bi, -1):
             px, py = path[k]
             if w.seg_walkable(x, y, px, py):
                 tgt = path[k]
@@ -399,8 +413,15 @@ class Bot:
         scx, scy, sr = self.safe_disc(zone)
         d_safe = hyp(x - scx, y - scy) - sr
         tleft = self.zone_time_left(zone, x, y, now)
-        travel = max(0.0, d_safe) * 1.35 / max(1.0, walk_speed)
+        self._ws, self._zone, self._sd = walk_speed, zone, (scx, scy, sr)
+        rk = 1.35
+        if FLAGS["risk_nav"]:
+            rr = getattr(self, "route_k", None)
+            if rr is not None and rr[1] == (round(scx), round(scy)):
+                rk = max(rk, rr[0])
+        travel = max(0.0, d_safe) * rk / max(1.0, walk_speed)
         zone_urgent = (not me.get("in_zone", True)) or tleft < travel + 12.0
+        self._tleft = tleft
 
         # ---- stuck detection: we asked to move a fair distance but barely moved
         lm = getattr(self, "_last_move", (0.0, 0.0))
@@ -417,6 +438,8 @@ class Bot:
         if stuck and now > self.unstuck_until + 0.5:
             a = rng.uniform(-PI, PI)
             self.unstuck_dir = (math.cos(a), math.sin(a))
+            if FLAGS["risk_nav"] and hasattr(self, "_zone"):
+                self.unstuck_dir = self.pick_move(x, y, [(math.cos(a + k * PI / 4), math.sin(a + k * PI / 4)) for k in range(8)], now)
             self.unstuck_until = now + 0.9
             self.force_replan = True
             self.hist.clear()
@@ -766,6 +789,9 @@ class Bot:
         # ---- mortar shell dodge (always)
         dodge = self.shell_dodge(obs, x, y, z)
         if dodge is not None:
+            if FLAGS["risk_nav"]:
+                a0 = math.atan2(dodge[1], dodge[0])
+                dodge = self.pick_move(x, y, [dodge] + [(math.cos(a0 + da), math.sin(a0 + da)) for da in (1.0, -1.0)], now)
             move = self.free_dir(x, y, *dodge)
             boost = energy > 10
             mode += "+shell"
@@ -885,6 +911,19 @@ class Bot:
                     cands.append((d - (300 if FLAGS["drop_priority"] else 120), "drop", dr))
         if FLAGS["retreat_early"] and hpf < 0.6:
             cands = [c for c in cands if c[1] in ("cube", "pickup") and hyp(c[2]["pos"][0] - x, c[2]["pos"][1] - y) < 25]
+        if FLAGS["risk_nav"] and self._tleft < 90:
+            ws = max(1.0, self._ws)
+            ok = []
+            for c in cands:
+                if c[0] <= -200:
+                    ok.append(c)
+                    continue
+                px, py = c[2]["pos"][0], c[2]["pos"][1]
+                eta = hyp(px - x, py - y) * 1.3 / ws
+                back = max(0.0, hyp(px - scx, py - scy) - sr) * 1.35 / ws
+                if self.zone_time_left(zone, px, py, now) > eta + 0.5 * back + 6.0:
+                    ok.append(c)
+            cands = ok
         cands.sort(key=lambda c: c[0])
         # stick with current loot goal (avoid dithering), give up if no progress
         if self.loot_goal is not None:
@@ -1084,6 +1123,54 @@ class Bot:
             b_ = float(self.last_hurt_bearing)
             pts.append((x + 90 * math.cos(b_), y + 90 * math.sin(b_), 1.0))
         return pts
+
+    def make_risk(self, thr, now):
+        """Per-metre extra route cost: open to a known threat (tactical map), outside the zone on arrival, chokepoints."""
+        w, zone, spd = self.world, self._zone, max(1.0, self._ws)
+        cache = {}
+        nbr = w.nbr
+        za = self.zone_at
+
+        def risk(c, g):
+            e = cache.get(c)
+            if e is None:
+                cx, cy = w.ccenter(c)
+                r = 0.0
+                for tx, ty, wt in thr:
+                    dd = hyp(cx - tx, cy - ty)
+                    if dd < 140 and not w.covered_from(c, tx, ty):
+                        r += (1.5 if dd < 90 else 0.7) * wt
+                if bin(nbr[c]).count("1") < 6:
+                    r += 0.3
+                e = cache[c] = (r, cx, cy)
+            r, cx, cy = e
+            zx, zy, zr = za(zone, now + g / spd)
+            out = hyp(cx - zx, cy - zy) - (zr - 4.0)
+            if out > 0:
+                r += 3.0 + 0.1 * out
+            return r
+        return risk
+
+    def pick_move(self, x, y, cands, now):
+        """Choose among candidate moves (first = preferred): stay walkable, in the zone, and do not close on threats."""
+        zx, zy, zr = self.zone_at(self._zone, now + 2.0)
+        inz = hyp(x - zx, y - zy) < zr - 2.0
+        thr = [t for t in self.threat_points(now, x, y) if hyp(t[0] - x, t[1] - y) < 70]
+        w = self.world
+        best, bs = cands[0], 1e18
+        for i, (mx, my) in enumerate(cands):
+            ux, uy = unit(mx, my)
+            px, py = x + ux * 5.0, y + uy * 5.0
+            sc = 0.6 * i
+            if w is not None and not w.walkable(px, py):
+                sc += 6.0
+            if inz and hyp(px - zx, py - zy) > zr - 2.0:
+                sc += 10.0
+            for tx, ty, wt in thr:
+                sc += 0.4 * wt * (hyp(tx - x, ty - y) - hyp(tx - px, ty - py))
+            if sc < bs:
+                bs, best = sc, (mx, my)
+        return best
 
     def safe_point(self, x, y, zone, now, scx, scy, sr, urgent, force=False):
         """Low-threat walkable point 35-110 m away, inside where the zone will be."""

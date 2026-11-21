@@ -383,6 +383,7 @@ class Planner:
         self.goal = None
         self.done_t = -1e9
         self.failed = False
+        self.risk = None  # optional callable risk(cell, g) -> extra cost per metre (exposure, zone, chokes)
 
     def request(self, sx, sy, goal, now):
         w = self.w
@@ -398,7 +399,8 @@ class Planner:
         g = {s: 0.0}
         came = {s: -1}
         h0 = max(0.0, math.hypot(*(a - b for a, b in zip(w.ccenter(s), (gx, gy)))) - gr)
-        self.job = {"open": [(h0, 0.0, s)], "g": g, "came": came, "goal": goal, "best": (h0, s), "exp": 0}
+        self.job = {"open": [(h0, 0.0, s)], "g": g, "came": came, "goal": goal, "best": (h0, s), "exp": 0,
+                    "risk": self.risk}
         self.goal = goal
         self.failed = False
         _ = n
@@ -421,6 +423,7 @@ class Planner:
         g = job["g"]
         came = job["came"]
         best = job["best"]
+        risk = job.get("risk")
         steps = 0
         pc = time.perf_counter
         found = -1
@@ -440,7 +443,10 @@ class Planner:
                     continue
                 dx, dy = DIRS8[d]
                 nc = c + dy * cnx + dx
-                ng = gc + (cs * SQ2 if dx and dy else cs)
+                st = cs * SQ2 if dx and dy else cs
+                ng = gc + st
+                if risk is not None:
+                    ng += st * risk(nc, gc)
                 if ng < g.get(nc, 1e18):
                     g[nc] = ng
                     came[nc] = c
