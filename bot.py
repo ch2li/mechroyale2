@@ -1,4 +1,4 @@
-"""buckeye v9.0 — mechfight/1 bot.
+"""buckeye v10.0 — mechfight/1 bot.
 
 Practice matches are 1 vs a 15-bot squad that hunts you, so points come from (a) not dying to the
 zone and (b) killing hunters one at a time before they overwhelm you. This bot:
@@ -51,7 +51,8 @@ FLAGS = {
     "no_mortar": False,       # v5: never carry a mortar (lasers cook it off); testbed 13.56 vs 11.5 (n=18/12)
     "dodge_timing": False,    # dodge an enemy laser only in the last moment (house bots fire at exactly 2.75 s)
     "retreat_early": False,   # v6: disengage earlier when outnumbered/losing; no looting while hurt (regen first)
-    "pursue": True,           # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
+    "tmap": True,             # v10: use the precomputed tactical map (tmap.bin) for cover and camp spots
+    "pursue": False,          # v9: no enemy in sight -> go meet the hunters (last seen / heard) instead of camping
     "drop_priority": False,   # v8: supply drops (full HP + 3 cubes) beat almost anything, even mid-fight
     "pacifist": False,        # v7 probe: never start fights (kills bring more hunters); evade and survive to the end
 }
@@ -85,7 +86,7 @@ if FLAGS["no_mortar"]:
 
 
 class Bot:
-    name = "buckeye-v9.0"
+    name = "buckeye-v10.0"
 
     def __init__(self, hello: mf.Hello):
         cfg = hello["config"]
@@ -1034,6 +1035,10 @@ class Bot:
             score = dme * 0.6 + rr * 0.25
             if walls:
                 score -= 60
+            if FLAGS["tmap"] and w.tmap is not None:
+                cc = w.cidx(px, py)
+                if cc >= 0:
+                    score += 3.0 * w.exposure(cc)
             if score < bs:
                 sx = sum(math.cos(a2) for a2 in walls)
                 sy = sum(math.sin(a2) for a2 in walls)
@@ -1252,6 +1257,10 @@ class Bot:
         if cache is not None and now - cache[0] < 0.6:
             return cache[1]
         w = self.world
+        if FLAGS["tmap"] and w is not None and w.tmap is not None:
+            best = self.find_cover_tmap(x, y, enemies, zone, now)
+            self._cover = (now, best)
+            return best
         cx_, cy_, zr = self.zone_at(zone, now + 8)
         ecx = sum(m["pos"][0] for m in enemies) / len(enemies)
         ecy = sum(m["pos"][1] for m in enemies) / len(enemies)
@@ -1278,6 +1287,29 @@ class Bot:
             if best is not None:
                 break
         self._cover = (now, best)
+        return best
+
+    def find_cover_tmap(self, x, y, enemies, zone, now):
+        """Tactical-map cover: the closest reachable cell hidden from every known enemy (lookup, no raycasts)."""
+        w = self.world
+        threats = [(m["pos"][0], m["pos"][1]) for m in enemies[:6]]
+        threats += [(px, py) for (t, px, py) in self.emem.values() if now - t < 8]
+        if not threats:
+            return None
+        cx_, cy_, zr = self.zone_at(zone, now + 8)
+        ecx = sum(t[0] for t in threats) / len(threats)
+        ecy = sum(t[1] for t in threats) / len(threats)
+        reach = w.reachable_cells(x, y, 13)
+        best, bs = None, 1e18
+        for c, pl in reach.items():
+            px, py = w.ccenter(c)
+            if hyp(px - cx_, py - cy_) > zr - 6:
+                continue
+            seen = sum(1 for (tx, ty) in threats if not w.covered_from(c, tx, ty))
+            # fully hidden cells first, then fewest exposures; prefer short paths that open distance from the enemies
+            score = seen * 120.0 + pl - 0.35 * hyp(px - ecx, py - ecy) + 0.5 * w.exposure(c)
+            if score < bs:
+                bs, best = score, (px, py)
         return best
 
     def shell_dodge(self, obs, x, y, z):

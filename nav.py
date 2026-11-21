@@ -15,6 +15,7 @@ import heapq
 import json
 import math
 import os
+import sys
 import time
 
 DIRS8 = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
@@ -36,7 +37,6 @@ class World:
             g.frombytes(f.read())
         if len(g) != nx * ny:
             raise ValueError("terrain size mismatch")
-        import sys
         if sys.byteorder != "little":
             g.byteswap()
         self.ground = g
@@ -198,6 +198,20 @@ class World:
                             stack.append(nc)
             label += 1
         self.comp = comp
+        # optional precomputed tactical map (directional cover bits), see build_tmap.py
+        self.tmap = None
+        try:
+            tp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmap.bin")
+            if os.path.exists(tp):
+                tm = array.array("H")
+                with open(tp, "rb") as f:
+                    tm.frombytes(f.read())
+                if sys.byteorder != "little":
+                    tm.byteswap()
+                if len(tm) == cnx * cny * 3:
+                    self.tmap = tm
+        except Exception:
+            self.tmap = None
         self.load_s = time.perf_counter() - t0
 
     # ------------------------------------------------------------------ queries
@@ -265,6 +279,57 @@ class World:
             if base[k] <= z <= top[k]:
                 return False
         return True
+
+    # tactical map
+    def covered_from(self, c: int, ex: float, ey: float) -> bool:
+        """True if a mech in coarse cell c cannot be shot from (ex, ey) according to the tactical map."""
+        tm = self.tmap
+        if tm is None:
+            return False
+        x, y = self.ccenter(c)
+        dx, dy = ex - x, ey - y
+        d = math.hypot(dx, dy)
+        band = 0 if d < 40 else (1 if d < 90 else 2)
+        a = math.atan2(dy, dx) % (2 * math.pi)
+        f = a / (math.pi / 8)
+        k0 = int(f) % 16
+        k1 = (k0 + 1) % 16
+        m = tm[c * 3 + band]
+        return bool((m >> k0) & 1) and bool((m >> k1) & 1)
+
+    def exposure(self, c: int) -> int:
+        """How many of the 32 mid/long-range directions can shoot into cell c."""
+        tm = self.tmap
+        if tm is None:
+            return 16
+        e = 0
+        for band in (1, 2):
+            e += 16 - bin(tm[c * 3 + band]).count("1")
+        return e
+
+    def reachable_cells(self, x: float, y: float, max_steps: int = 13):
+        """BFS over the coarse walk graph: {cell: path length in metres}."""
+        s = self.nearest_free_c(x, y)
+        if s < 0:
+            return {}
+        cnx, cs = self.cnx, self.cs
+        dist = {s: 0.0}
+        frontier = [s]
+        for _ in range(max_steps):
+            nxt = []
+            for c in frontier:
+                m = self.nbr[c]
+                for d in range(8):
+                    if (m >> d) & 1:
+                        dx, dy = DIRS8[d]
+                        nc = c + dy * cnx + dx
+                        nd = dist[c] + (cs * SQ2 if dx and dy else cs)
+                        if nc not in dist or nd < dist[nc]:
+                            if nc not in dist:
+                                nxt.append(nc)
+                            dist[nc] = nd
+            frontier = nxt
+        return dist
 
     # coarse helpers
     def cidx(self, x: float, y: float) -> int:
